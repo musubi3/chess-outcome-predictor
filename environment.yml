@@ -1,0 +1,17 @@
+name: dsc148_chess
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pandas
+  - scikit-learn
+  - category_encoders
+  - xgboost
+  - lightgbm
+  - jupyter
+  - ipykernel
+  - pip:
+    - chess
+    - zstandard
