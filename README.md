@@ -19,7 +19,7 @@ The modeling pipeline ingests a subset of **100,000 standard competitive matches
 ### Target Formulation
 Our binary target variable is formulated as:
 
-$$\text{is\_upset} = \begin{cases} 1 & \text{if the lower-rated player wins} \\ 0 & \text{if the higher-rated player wins or the match is a draw} \end{cases}$$
+$`\text{is\_upset} = \begin{cases} 1 & \text{if the lower-rated player wins} \\ 0 & \text{if the higher-rated player wins or the match is a draw} \end{cases}`$
 
 Due to the natural layout of competitive sports matching, this creates a distinct **minority class imbalance of 34.48%**. To ensure zero data leakage, data partitions are strictly split using a stratified 70/15/15 distribution before any downstream feature transformations:
 
