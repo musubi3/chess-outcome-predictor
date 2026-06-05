@@ -4,13 +4,14 @@ import io
 import os
 from chess.pgn import Game, read_game
 import zstandard as zstd
+from src.features import parse_moves, parse_result, parse_termination, parse_time_control, parse_event, parse_elo, parse_upset, parse_skill_level
+from typing import Any
 
 def load_and_process_lichess_data(zst_path: Path, output_csv_path: Path, target_rows: int = 100000):
     '''
-    Streams raw .pgn.zst [Lichess](https://database.lichess.org/#standard_games) data, extracts key features for the predictive task,
-    and saves a clean tabular snapshot to CSV.
+    Streams raw [.pgn.zst](https://database.lichess.org/#standard_games) data, extracts environmental & tactical features 
+    for the Upset Anomaly Predictive task, and saves a tabular snapshot to CSV.
     '''
-    
     if os.path.exists(output_csv_path):
         print(f'Clean data already exists at {output_csv_path}. Loading existing file...')
         return pd.read_csv(output_csv_path)
@@ -18,12 +19,13 @@ def load_and_process_lichess_data(zst_path: Path, output_csv_path: Path, target_
     if not os.path.exists(zst_path):
         raise FileNotFoundError(f'Raw source archive not found at {zst_path}. Please download it first.')
     
-    games_data: list[dict] = []
+    games_data: list[dict[str, Any]] = []
 
+    print(f'Processing raw stream to extract {target_rows:,} clean chess anomalies...')
     with open(zst_path, 'rb') as fh:
-        dctx = zstd.ZstdDecompressor()
+        dctx: zstd.ZstdDecompressor = zstd.ZstdDecompressor()
         with dctx.stream_reader(fh) as reader:
-            text_stream = io.TextIOWrapper(reader, encoding='utf-8')
+            text_stream: io.TextIOWrapper = io.TextIOWrapper(reader, encoding='utf-8')
             
             while len(games_data) < target_rows:
                 game: Game = read_game(text_stream)
@@ -32,46 +34,67 @@ def load_and_process_lichess_data(zst_path: Path, output_csv_path: Path, target_
                     break
                     
                 headers: dict[str, str] = game.headers
-                
-                white_elo: str = headers.get('WhiteElo', '?')
-                black_elo: str = headers.get('BlackElo', '?')
-                result: str = headers.get('Result', '?')  
-                opening_name: str = headers.get('Opening', '?')
-                eco_code: str = headers.get('ECO', '?')   
-                time_control: str = headers.get('TimeControl', '?')
-                
-                if white_elo == '?' or black_elo == '?' or result == '*' or result == '1/2-1/2':
+                feature_strs: list[str] = ['WhiteElo', 'BlackElo', 'Result', 'Opening', 'ECO', 'TimeControl', 'Event', 'Termination']
+                features: dict[str, str] = {feature: headers.get(feature, '?') for feature in feature_strs}
+                if features['Result'] in ['*', '1/2-1/2']:
                     continue
-                    
-                moves_seq: list[str] = [str(move) for move in game.mainline_moves()]
-                opening_moves: str = ' '.join(moves_seq[:6])
                 
-                if not opening_moves:
+                w_elo_int: int; b_elo_int: int; rating_diff: int
+                w_elo_int, b_elo_int, rating_diff = parse_elo(features['WhiteElo'], features['BlackElo'])
+                if not w_elo_int or not b_elo_int:
                     continue
+                
+                game_elo: float; skill_tier: str
+                game_elo, skill_tier = parse_skill_level(w_elo_int, b_elo_int)
+                
+                white_moves: str; black_moves: str; white_castled: int; black_castled: int; white_developed: int; black_developed: int; white_queen_moved: int; black_queen_moved: int
+                white_moves, black_moves, white_castled, black_castled, white_developed, black_developed, white_queen_moved, black_queen_moved = parse_moves(game.mainline_moves())
+                if len(white_moves.split() + black_moves.split()) < 6:
+                    continue
+                
+                winner_bit: int = parse_result(features['Result'])
+                is_upset: int = parse_upset(rating_diff, winner_bit)
+                
+                base_time: int; increment: int
+                base_time, increment = parse_time_control(features['TimeControl']) 
+                
+                speed_category: str = parse_event(features['Event'])
+                if not speed_category:
+                    continue
+                
+                termination_category: str = parse_termination(features['Termination'])
+                if not termination_category:
+                    continue   
 
                 games_data.append({
-                    'white_elo': int(white_elo),
-                    'black_elo': int(black_elo),
-                    'rating_diff': int(white_elo) - int(black_elo),
-                    'opening_eco': eco_code,
-                    'opening_name': opening_name,
-                    'opening_moves': opening_moves,
-                    'winner': 1 if result == '1-0' else 0 
+                    'skill_tier': skill_tier,
+                    'game_elo': game_elo,
+                    'white_elo': w_elo_int,
+                    'black_elo': b_elo_int,
+                    'abs_rating_diff': abs(rating_diff),
+                    'higher_rated_color': 1 if rating_diff > 0 else 0,
+                    'base_time': base_time,
+                    'increment': increment,
+                    'speed_category': speed_category,
+                    'opening_eco': features['ECO'],
+                    'opening_name': features['Opening'],
+                    'white_moves': white_moves,
+                    'black_moves': black_moves,
+                    'white_castled': white_castled,
+                    'black_castled': black_castled,
+                    'white_developed': white_developed,
+                    'black_developed': black_developed,
+                    'white_queen_moved': white_queen_moved,
+                    'black_queen_moved': black_queen_moved,
+                    'is_upset': is_upset,
+                    'termination_category': termination_category,
+                    'winner': winner_bit
                 })
 
-    df = pd.DataFrame(games_data)
+    df: pd.DataFrame = pd.DataFrame(games_data)
     
     output_csv_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_csv_path, index=False)
     print(f'Successfully compiled and saved {len(df):,} rows to {output_csv_path}!')
     
     return df
-
-if __name__ == '__main__':
-    RAW_FILE: str = 'lichess_db_standard_rated_2016-07.pgn.zst'
-    RAW_PATH: Path = Path('data') / RAW_FILE
-    
-    PROCESSED_FILE: str = 'lichess_processed_100k.csv'
-    PROCESSED_PATH: Path = Path('data') / PROCESSED_FILE
-    
-    load_and_process_lichess_data(RAW_PATH, PROCESSED_PATH)
